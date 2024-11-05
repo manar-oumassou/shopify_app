@@ -22,6 +22,7 @@ def load_data(file):
 st.sidebar.title("Sales Analysis & Forecasting")
 st.sidebar.info("Navigate through the pages to explore and forecast your sales data.")
 page = st.sidebar.radio("Select Page", ["Home", "Analysis", "Forecast"], index=0)
+data = None
 
 # Home Page for File Upload
 if page == "Home":
@@ -35,8 +36,12 @@ if page == "Home":
         st.success("File uploaded and data loaded successfully!")
         st.write("Now, navigate to **Analysis** or **Forecast** to explore the data.")
 
-# Retrieve data from session state
+if "data" not in st.session_state:
+    st.session_state["data"] = None  # Initialize it to None
 data = st.session_state['data']
+
+
+
 
 # Analysis Page
 if page == "Analysis":
