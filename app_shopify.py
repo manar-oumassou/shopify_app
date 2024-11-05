@@ -332,6 +332,19 @@ elif page == "Forecast":
             forecast_fig.add_trace(go.Scatter(x=forecast_real_scale.index, y=forecast_real_scale, mode='lines', name='Forecast', line=dict(dash='dash', color='red')))
             forecast_fig.update_layout(title='SARIMA Forecast on Original Sales Data Scale', xaxis_title='Date', yaxis_title='Total Sales (CA)')
             st.plotly_chart(forecast_fig)
+                        # Download button for the forecasted values
+                        # Create DataFrame for Download
+            forecast_df = pd.DataFrame({
+                "Date": forecast_real_scale.index,
+                "Forecasted Sales": forecast_real_scale.values,
+            })
+            csv = forecast_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download forecasted values as CSV",
+                data=csv,
+                file_name="forecasted_sales.csv",
+                mime="text/csv"
+            )
 
         else:
             st.warning("Required column 'Ventes totales' not found for revenue forecast.")
@@ -482,10 +495,28 @@ elif page == "Forecast":
 
             # Show plot in Streamlit
             st.plotly_chart(fig)
-
+           
             # Display Forecasted Values
             st.write("### Forecasted Values")
             st.write(forecast_sales)
+                # Create DataFrame for download
+            forecast_df = pd.DataFrame({
+                "Date": forecast_sales.index,
+                "Forecasted Sales": forecast_sales.values,
+                "Lower CI": lower_ci.values,
+                "Upper CI": upper_ci.values
+            })
+
+            # Add download button for the forecasted values
+            csv = forecast_df.to_csv(index=False).encode('utf-8')
+            
+            st.download_button(
+                label="📥 Download Forecasted Values as CSV",
+                data=csv,
+                file_name=f"{selected_product}_forecasted_sales.csv",
+                mime="text/csv"
+            )
+
         else:
             st.write("Please upload a dataset to proceed.")
     else:
