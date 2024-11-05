@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import plotly.express as px
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.seasonal import seasonal_decompose
-
+import plotly.graph_objects as go
 st.set_page_config(page_title="Sales Data Analysis and Forecasting", layout="wide")
 
 # Load dataset function
@@ -252,16 +252,11 @@ elif page == "Forecast":
         forecast_data = data.dropna(subset=['Date']).copy()
         forecast_data.set_index('Date', inplace=True)
 
-        # Total Revenue Forecast with Prophet
+        # Total Revenue Forecast with SARIMA
         st.subheader("Forecasting Total Sales (CA)")
 
         if 'Ventes totales' in forecast_data.columns:
-            # Drop columns with excessive nulls and rows without 'Produit' or 'Date'
-            null_counts = data.isnull().sum()
-            null_columns = null_counts[null_counts > 0]
-            st.write(null_columns)
-
-            # Drop specified columns
+            # Data Cleaning
             columns_to_drop = [
                 'Emplacements de PDV', 'Pays de facturation', 'Région de facturation', 
                 'Ville de facturation', 'Pays d\'expédition', 'Région d\'expédition', 
@@ -269,87 +264,74 @@ elif page == "Forecast":
             ]
             data_cleaned = data.drop(columns=columns_to_drop, errors='ignore')
             data_cleaned = data_cleaned.dropna(subset=['Produit'])
-
-            # Ensure 'Date' column is datetime and set as index
             data_cleaned['Date'] = pd.to_datetime(data_cleaned['Date'], errors='coerce')
             data_cleaned = data_cleaned.dropna(subset=['Date'])
             data_cleaned.set_index('Date', inplace=True)
 
-            # Monthly resampling and transformation
+            # Monthly Resampling and Plotting
             st.write("### Monthly Resampled Sales Data")
             monthly_sales = data_cleaned['Ventes totales'].resample('M').sum()
-            st.line_chart(monthly_sales)
+            fig1 = px.line(monthly_sales, title="Monthly Resampled Sales Data", labels={'index': 'Date', 'value': 'Ventes totales'})
+            st.plotly_chart(fig1)
 
-            # Log transformation to stabilize variance
+            # Log Transformation
             st.write("### Log Transformation of Sales Data")
-            log_sales = np.log(monthly_sales.replace(0, np.nan)).dropna()  # Replace zeros to avoid log(0) issues
-            st.line_chart(log_sales)
+            log_sales = np.log(monthly_sales.replace(0, np.nan)).dropna()
+            fig2 = px.line(log_sales, title="Log Transformation of Sales Data", labels={'index': 'Date', 'value': 'Log(Ventes totales)'})
+            st.plotly_chart(fig2)
 
-            # First-order differencing
+            # Differencing
             st.write("### Differenced Log-Transformed Sales Data")
             log_sales_diff = log_sales.diff().dropna()
-            st.line_chart(log_sales_diff)
+            fig3 = px.line(log_sales_diff, title="Differenced Log-Transformed Sales Data", labels={'index': 'Date', 'value': 'Differenced Log Sales'})
+            st.plotly_chart(fig3)
 
-            # Augmented Dickey-Fuller test on log-differenced series
+            # Augmented Dickey-Fuller Test
             adf_result_log_diff = adfuller(log_sales_diff)
             adf_log_diff_p_value = adf_result_log_diff[1]
             st.write(f"ADF Test p-value on Differenced Log Sales Data: {adf_log_diff_p_value:.4f}")
 
-            # Seasonal decomposition
+            # Seasonal Decomposition
             st.write("### Seasonal Decomposition of Differenced Log Sales Data")
             decomposition = seasonal_decompose(log_sales_diff, model='additive', period=12)
-            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8))
-            decomposition.trend.plot(ax=ax1)
-            ax1.set_ylabel('Trend')
-            decomposition.seasonal.plot(ax=ax2)
-            ax2.set_ylabel('Seasonal')
-            decomposition.resid.plot(ax=ax3)
-            ax3.set_ylabel('Residuals')
-            st.pyplot(fig)
+            trend_fig = px.line(decomposition.trend, title="Trend Component")
+            seasonal_fig = px.line(decomposition.seasonal, title="Seasonal Component")
+            residual_fig = px.line(decomposition.resid, title="Residual Component")
+            st.plotly_chart(trend_fig)
+            st.plotly_chart(seasonal_fig)
+            st.plotly_chart(residual_fig)
 
-            # ADF Test on residuals to check for stationarity
+            # ADF Test on residuals
             residuals = decomposition.resid.dropna()
             adf_result_residuals = adfuller(residuals)
             adf_residuals_p_value = adf_result_residuals[1]
             st.write(f"ADF Test p-value on Residuals: {adf_residuals_p_value:.4f}")
 
-            # Train-test split for SARIMA modeling
+            # Train-Test Split and Forecast Extension
             train_size = int(len(log_sales_diff) * 0.85)
             train, test = log_sales_diff[:train_size], log_sales_diff[train_size:]
-
-            # User input for forecast extension
             forecast_extension = st.slider("Select the number of steps to extend the forecast:", min_value=1, max_value=24, value=3)
 
             # SARIMA Model Fitting and Forecasting
-            st.write("### SARIMA Model Forecast")
             sarima_model = SARIMAX(train, order=(1, 1, 1), seasonal_order=(1, 1, 1, 12))
             sarima_results = sarima_model.fit()
-
-            # Forecasting with user-defined steps
             forecast_steps = len(test) + forecast_extension
             forecast = sarima_results.get_forecast(steps=forecast_steps)
             forecast_values = forecast.predicted_mean
             forecast_ci = forecast.conf_int()
 
-            # Reverse differencing to return to original scale
-            last_log_value_train = log_sales.iloc[train_size - 1]  # Last point in the training set (log scale)
+            # Convert forecast back to original scale
+            last_log_value_train = log_sales.iloc[train_size - 1]
             forecast_log_values_real_scale = forecast_values.cumsum() + last_log_value_train
             forecast_real_scale = np.exp(forecast_log_values_real_scale)
 
-            # Plot the original data and forecast
-            fig2, ax = plt.subplots(figsize=(10, 6))
-            ax.plot(monthly_sales, label='Original Sales Data', color='blue')
-            ax.plot(forecast_real_scale, label='SARIMA Forecast (Original Scale)', color='red', linestyle='--')
-            ax.set_title('SARIMA Forecast on Original Sales Data Scale')
-            ax.set_xlabel('Date')
-            ax.set_ylabel('Total Sales (CA)')
-            ax.legend()
-            ax.grid()
-            st.pyplot(fig2)
-
-            # Display forecast intervals
-            st.write("### Forecast Intervals")
-            st.write(forecast_ci)
+            # Plot the Original Data and Forecast
+            st.write("### SARIMA Model Forecast on Original Sales Data Scale")
+            forecast_fig = go.Figure()
+            forecast_fig.add_trace(go.Scatter(x=monthly_sales.index, y=monthly_sales, mode='lines', name='Original Sales'))
+            forecast_fig.add_trace(go.Scatter(x=forecast_real_scale.index, y=forecast_real_scale, mode='lines', name='Forecast', line=dict(dash='dash', color='red')))
+            forecast_fig.update_layout(title='SARIMA Forecast on Original Sales Data Scale', xaxis_title='Date', yaxis_title='Total Sales (CA)')
+            st.plotly_chart(forecast_fig)
 
         else:
             st.warning("Required column 'Ventes totales' not found for revenue forecast.")
@@ -423,17 +405,6 @@ elif page == "Forecast":
             product_series = product_data.set_index('Month')['Log_Sales']
             product_series.index = product_series.index.to_timestamp()  # Convert PeriodIndex to Timestamp
 
-            # Stationarity check on differenced data if possible
-            product_differenced = product_series.diff(12).dropna() if len(product_series) > 12 else product_series.diff(1).dropna()
-            if not product_differenced.empty:
-                try:
-                    adf_result = adfuller(product_differenced)
-                    st.write(f"ADF Test p-value for {selected_product}: {adf_result[1]:.4f}")
-                except ValueError:
-                    st.warning(f"Insufficient data for ADF test on {selected_product}. Skipping stationarity check.")
-            else:
-                st.warning(f"Not enough data available for stationarity test for {selected_product}.")
-
             # Retrieve SARIMA configuration for the selected product
             if selected_product in best_configs:
                 order = best_configs[selected_product][:3]
@@ -468,21 +439,52 @@ elif page == "Forecast":
             upper_ci = np.expm1(forecast_ci.iloc[:, 1])
             actual_sales = np.expm1(test) if len(test) > 0 else None
 
+            # Plot forecast with Plotly
+            fig = go.Figure()
 
-            # Plot forecast limited to last three months
-            plt.figure(figsize=(10, 6))
+            # Add actual sales if available
             if actual_sales is not None:
-                plt.plot(actual_sales, label='Actual Data', color='green')
-            plt.plot(forecast_sales, label='Forecast', color='orange')
-            plt.fill_between(forecast_sales.index, lower_ci, upper_ci, color='orange', alpha=0.3)
-            plt.title(f'SARIMA Forecast for {selected_product} ')
-            plt.xlabel('Date')
-            plt.ylabel('Sales')
-            plt.legend()
-            st.pyplot(plt.gcf())
+                fig.add_trace(go.Scatter(
+                    x=actual_sales.index,
+                    y=actual_sales,
+                    mode='lines',
+                    name='Actual Data',
+                    line=dict(color='green')
+                ))
 
-            # Display Forecasted Values for the last three months
-            st.write("### Forecasted Values ")
+            # Add forecasted sales
+            fig.add_trace(go.Scatter(
+                x=forecast_sales.index,
+                y=forecast_sales,
+                mode='lines',
+                name='Forecast',
+                line=dict(color='orange')
+            ))
+
+            # Add confidence interval as filled area
+            fig.add_trace(go.Scatter(
+                x=forecast_sales.index.tolist() + forecast_sales.index[::-1].tolist(),
+                y=upper_ci.tolist() + lower_ci[::-1].tolist(),
+                fill='toself',
+                fillcolor='rgba(255, 165, 0, 0.2)',  # Light orange fill
+                line=dict(color='rgba(255, 165, 0, 0)'),  # No outline
+                showlegend=False,
+                name='Confidence Interval'
+            ))
+
+            # Update layout
+            fig.update_layout(
+                title=f'SARIMA Forecast for {selected_product}',
+                xaxis_title='Date',
+                yaxis_title='Sales',
+                legend_title='Legend'
+            )
+
+            # Show plot in Streamlit
+            st.plotly_chart(fig)
+
+            # Display Forecasted Values
+            st.write("### Forecasted Values")
             st.write(forecast_sales)
         else:
             st.write("Please upload a dataset to proceed.")
