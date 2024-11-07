@@ -10,7 +10,12 @@ from statsmodels.tsa.seasonal import seasonal_decompose
 import plotly.graph_objects as go
 st.set_page_config(page_title="Sales Data Analysis and Forecasting", layout="wide")
 
-# Load dataset function
+if 'data' not in st.session_state:
+    st.session_state['data'] = None  # Initialize data to None if not yet loaded
+if 'data2' not in st.session_state:
+    st.session_state['data2'] = None  # Initialize data2 similarly
+
+# Function to load data
 @st.cache_data
 def load_data(file):
     data = pd.read_csv(file)
@@ -18,29 +23,28 @@ def load_data(file):
         data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
     return data
 
-# App Title and Sidebar
-st.sidebar.title("Sales Analysis & Forecasting")
-st.sidebar.info("Navigate through the pages to explore and forecast your sales data.")
-page = st.sidebar.radio("Select Page", ["Home", "Analysis","promotion analysis","Forecast"], index=0)
-data = None
+# Sidebar Navigation
+page = st.sidebar.radio("Select Page", ["Home", "Analysis", "Promotion Analysis", "Forecast"], index=0)
 
-# Home Page for File Upload
+# Home Page: Load CSV File
 if page == "Home":
     st.title("📈 Sales Data Analysis and Forecasting")
     st.write("Upload a CSV file to get started with sales data analysis and forecasting.")
     
     uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
+
     if uploaded_file:
+        # Load data and store it in session state
         data = load_data(uploaded_file)
-        st.session_state["data"] = data
+        st.session_state['data'] = data
+        st.session_state['data2'] = data.copy()  # Make a copy for data2 if needed separately
+        
         st.success("File uploaded and data loaded successfully!")
         st.write("Now, navigate to **Analysis** or **Forecast** to explore the data.")
 
-if "data" not in st.session_state:
-    st.session_state["data"] = None  # Initialize it to None
-data = st.session_state['data']
-
-
+# Access data from session state on other pages
+data = st.session_state.get('data')
+data2 = st.session_state.get('data2')
 
 
 # Analysis Page
@@ -269,37 +273,21 @@ elif page == "Forecast":
             data_cleaned.set_index('Date', inplace=True)
 
             # Monthly Resampling and Plotting
-            st.write("### Monthly Resampled Sales Data")
             monthly_sales = data_cleaned['Ventes totales'].resample('M').sum()
-            fig1 = px.line(monthly_sales, title="Monthly Resampled Sales Data", labels={'index': 'Date', 'value': 'Ventes totales'})
-            st.plotly_chart(fig1)
-
+            
             # Log Transformation
-            st.write("### Log Transformation of Sales Data")
             log_sales = np.log(monthly_sales.replace(0, np.nan)).dropna()
-            fig2 = px.line(log_sales, title="Log Transformation of Sales Data", labels={'index': 'Date', 'value': 'Log(Ventes totales)'})
-            st.plotly_chart(fig2)
+ 
 
             # Differencing
-            st.write("### Differenced Log-Transformed Sales Data")
             log_sales_diff = log_sales.diff().dropna()
-            fig3 = px.line(log_sales_diff, title="Differenced Log-Transformed Sales Data", labels={'index': 'Date', 'value': 'Differenced Log Sales'})
-            st.plotly_chart(fig3)
 
             # Augmented Dickey-Fuller Test
             adf_result_log_diff = adfuller(log_sales_diff)
             adf_log_diff_p_value = adf_result_log_diff[1]
-            st.write(f"ADF Test p-value on Differenced Log Sales Data: {adf_log_diff_p_value:.4f}")
 
             # Seasonal Decomposition
-            st.write("### Seasonal Decomposition of Differenced Log Sales Data")
             decomposition = seasonal_decompose(log_sales_diff, model='additive', period=12)
-            trend_fig = px.line(decomposition.trend, title="Trend Component")
-            seasonal_fig = px.line(decomposition.seasonal, title="Seasonal Component")
-            residual_fig = px.line(decomposition.resid, title="Residual Component")
-            st.plotly_chart(trend_fig)
-            st.plotly_chart(seasonal_fig)
-            st.plotly_chart(residual_fig)
 
             # ADF Test on residuals
             residuals = decomposition.resid.dropna()
@@ -543,48 +531,62 @@ elif page == "Forecast":
             st.write("Please upload a dataset to proceed.")
     else:
         st.info("Please upload a dataset on the Home page.")
-elif page == "promotion analysis":
-    if data is not None:
+elif page == "Promotion Analysis":
+    if data2 is not None:
         # Convert Date to datetime and create a Promotion column (True if discount is applied)
-        data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
-        data['Promotion'] = data['Réductions'] < 0  # Assuming reductions are negative for promotions
+        data2['Date'] = pd.to_datetime(data2['Date'], errors='coerce')
+        data2['Promotion'] = data2['Réductions'] < 0  # Assuming reductions are negative for promotions
 
         # Group by month to get total sales and revenue during promotion and non-promotion periods
-        promotion_impact = data.groupby([data['Date'].dt.to_period("M"), 'Promotion']).sum(numeric_only=True)[['Ventes totales']]
+        promotion_impact = data2.groupby([data2['Date'].dt.to_period("M"), 'Promotion']).sum(numeric_only=True)[['Ventes totales']]
         promotion_impact = promotion_impact.unstack().fillna(0)
         promotion_impact.columns = ['No Promotion', 'With Promotion']
 
         # Plot sales with and without promotions
-        fig = px.bar(promotion_impact, x=promotion_impact.index.to_timestamp(), y=['No Promotion', 'With Promotion'],
-                     title='Sales and Revenue During Promotion vs Non-Promotion Periods')
+        fig = px.bar(
+            promotion_impact, 
+            x=promotion_impact.index.to_timestamp(), 
+            y=['No Promotion', 'With Promotion'],
+            title='Sales and Revenue During Promotion vs Non-Promotion Periods',
+            color_discrete_sequence=["blue", "red"]  # Setting colors
+        )
         st.plotly_chart(fig)
 
         # Quantity Sold with and without Promotion
-        quantity_impact = data.groupby([data['Date'].dt.to_period("M"), 'Promotion']).sum(numeric_only=True)[['Quantité nette']]
+        quantity_impact = data2.groupby([data2['Date'].dt.to_period("M"), 'Promotion']).sum(numeric_only=True)[['Quantité nette']]
         quantity_impact = quantity_impact.unstack().fillna(0)
         quantity_impact.columns = ['No Promotion', 'With Promotion']
-        fig2 = px.line(quantity_impact, x=quantity_impact.index.to_timestamp(), y=['No Promotion', 'With Promotion'],
-                       title='Quantity Sold with vs Without Promotions Over Time')
+        fig2 = px.line(
+            quantity_impact, 
+            x=quantity_impact.index.to_timestamp(), 
+            y=['No Promotion', 'With Promotion'],
+            title='Quantity Sold with vs Without Promotions Over Time',
+            color_discrete_sequence=["blue", "red"]  # Setting colors
+        )
         st.plotly_chart(fig2)
 
         # Average Quantity Sold per Product with and without Promotion
-        avg_quantity_per_product = data.groupby(['Produit', 'Promotion']).mean(numeric_only=True)['Quantité nette'].unstack().fillna(0)
+        avg_quantity_per_product = data2.groupby(['Produit', 'Promotion']).mean(numeric_only=True)['Quantité nette'].unstack().fillna(0)
         avg_quantity_per_product.columns = ['No Promotion', 'With Promotion']
-        fig3 = px.bar(avg_quantity_per_product, x=avg_quantity_per_product.index, y=['No Promotion', 'With Promotion'],
-                      title='Average Quantity Sold per Product: With vs Without Promotions')
+        fig3 = px.bar(
+            avg_quantity_per_product, 
+            x=avg_quantity_per_product.index, 
+            y=['No Promotion', 'With Promotion'],
+            title='Average Quantity Sold per Product: With vs Without Promotions',
+            color_discrete_sequence=["blue", "red"]  # Setting colors
+        )
         st.plotly_chart(fig3)
             # Promotion Impact on Average Order Value (AOV)
     # Timing of Purchases During Promotional Periods
-        data['Hour'] = data['Date'].dt.hour
-        hour_promo_sales = data[data['Promotion']].groupby('Hour').size()
-        hour_all_sales = data.groupby('Hour').size()
+        data2['Hour'] = data2['Date'].dt.hour
+        hour_promo_sales = data2[data2['Promotion']].groupby('Hour').size()
+        hour_all_sales = data2.groupby('Hour').size()
         promo_purchase_ratio = (hour_promo_sales / hour_all_sales).fillna(0) * 100
         fig8 = px.bar(promo_purchase_ratio, x=promo_purchase_ratio.index, y=promo_purchase_ratio,
                   title='Promotion Purchase Timing (Hourly)', labels={'y': 'Purchase Ratio (%)'})
         st.plotly_chart(fig8)
-        # Promotion Impact on Average Order Value (AOV)
-        # Ensure we have flattened data with aligned indices for Plotly
-        aov_promotion = data.groupby(['Date', 'Promotion']).agg({'Ventes totales': 'sum', 'Référence de commande': 'nunique'})
+        # Calculate AOV with promotion status
+        aov_promotion = data2.groupby(['Date', 'Promotion']).agg({'Ventes totales': 'sum', 'Référence de commande': 'nunique'})
         aov_promotion['AOV'] = aov_promotion['Ventes totales'] / aov_promotion['Référence de commande']
 
         # Group by month and promotion status
@@ -595,10 +597,16 @@ elif page == "promotion analysis":
         aov_monthly_df.columns = ['Month', 'No Promotion', 'With Promotion']
         aov_monthly_df['Month'] = aov_monthly_df['Month'].dt.to_timestamp()  # Convert period index to timestamp
 
-        # Plot with Plotly
-        fig7 = px.line(aov_monthly_df, x='Month', y=['No Promotion', 'With Promotion'],
-                    title='Promotion Impact on Average Order Value (AOV)')
+        # Plot with Plotly and set color scheme
+        fig7 = px.line(
+            aov_monthly_df, 
+            x='Month', 
+            y=['No Promotion', 'With Promotion'],
+            title='Promotion Impact on Average Order Value (AOV)',
+            color_discrete_sequence=["blue", "red"]  # Setting colors
+        )
         st.plotly_chart(fig7)
 
     else:
         st.write("Please upload a dataset to proceed.")
+# If data is missing, display a message on each page
