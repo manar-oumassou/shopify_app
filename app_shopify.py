@@ -21,7 +21,7 @@ def load_data(file):
 # App Title and Sidebar
 st.sidebar.title("Sales Analysis & Forecasting")
 st.sidebar.info("Navigate through the pages to explore and forecast your sales data.")
-page = st.sidebar.radio("Select Page", ["Home", "Analysis", "Forecast"], index=0)
+page = st.sidebar.radio("Select Page", ["Home", "Analysis","promotion analysis","Forecast"], index=0)
 data = None
 
 # Home Page for File Upload
@@ -543,3 +543,62 @@ elif page == "Forecast":
             st.write("Please upload a dataset to proceed.")
     else:
         st.info("Please upload a dataset on the Home page.")
+elif page == "promotion analysis":
+    if data is not None:
+        # Convert Date to datetime and create a Promotion column (True if discount is applied)
+        data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
+        data['Promotion'] = data['Réductions'] < 0  # Assuming reductions are negative for promotions
+
+        # Group by month to get total sales and revenue during promotion and non-promotion periods
+        promotion_impact = data.groupby([data['Date'].dt.to_period("M"), 'Promotion']).sum(numeric_only=True)[['Ventes totales']]
+        promotion_impact = promotion_impact.unstack().fillna(0)
+        promotion_impact.columns = ['No Promotion', 'With Promotion']
+
+        # Plot sales with and without promotions
+        fig = px.bar(promotion_impact, x=promotion_impact.index.to_timestamp(), y=['No Promotion', 'With Promotion'],
+                     title='Sales and Revenue During Promotion vs Non-Promotion Periods')
+        st.plotly_chart(fig)
+
+        # Quantity Sold with and without Promotion
+        quantity_impact = data.groupby([data['Date'].dt.to_period("M"), 'Promotion']).sum(numeric_only=True)[['Quantité nette']]
+        quantity_impact = quantity_impact.unstack().fillna(0)
+        quantity_impact.columns = ['No Promotion', 'With Promotion']
+        fig2 = px.line(quantity_impact, x=quantity_impact.index.to_timestamp(), y=['No Promotion', 'With Promotion'],
+                       title='Quantity Sold with vs Without Promotions Over Time')
+        st.plotly_chart(fig2)
+
+        # Average Quantity Sold per Product with and without Promotion
+        avg_quantity_per_product = data.groupby(['Produit', 'Promotion']).mean(numeric_only=True)['Quantité nette'].unstack().fillna(0)
+        avg_quantity_per_product.columns = ['No Promotion', 'With Promotion']
+        fig3 = px.bar(avg_quantity_per_product, x=avg_quantity_per_product.index, y=['No Promotion', 'With Promotion'],
+                      title='Average Quantity Sold per Product: With vs Without Promotions')
+        st.plotly_chart(fig3)
+            # Promotion Impact on Average Order Value (AOV)
+    # Timing of Purchases During Promotional Periods
+        data['Hour'] = data['Date'].dt.hour
+        hour_promo_sales = data[data['Promotion']].groupby('Hour').size()
+        hour_all_sales = data.groupby('Hour').size()
+        promo_purchase_ratio = (hour_promo_sales / hour_all_sales).fillna(0) * 100
+        fig8 = px.bar(promo_purchase_ratio, x=promo_purchase_ratio.index, y=promo_purchase_ratio,
+                  title='Promotion Purchase Timing (Hourly)', labels={'y': 'Purchase Ratio (%)'})
+        st.plotly_chart(fig8)
+        # Promotion Impact on Average Order Value (AOV)
+        # Ensure we have flattened data with aligned indices for Plotly
+        aov_promotion = data.groupby(['Date', 'Promotion']).agg({'Ventes totales': 'sum', 'Référence de commande': 'nunique'})
+        aov_promotion['AOV'] = aov_promotion['Ventes totales'] / aov_promotion['Référence de commande']
+
+        # Group by month and promotion status
+        aov_monthly = aov_promotion.groupby([aov_promotion.index.get_level_values(0).to_period("M"), 'Promotion']).mean()['AOV']
+
+        # Flatten and prepare the data for Plotly
+        aov_monthly_df = aov_monthly.unstack().reset_index()
+        aov_monthly_df.columns = ['Month', 'No Promotion', 'With Promotion']
+        aov_monthly_df['Month'] = aov_monthly_df['Month'].dt.to_timestamp()  # Convert period index to timestamp
+
+        # Plot with Plotly
+        fig7 = px.line(aov_monthly_df, x='Month', y=['No Promotion', 'With Promotion'],
+                    title='Promotion Impact on Average Order Value (AOV)')
+        st.plotly_chart(fig7)
+
+    else:
+        st.write("Please upload a dataset to proceed.")
