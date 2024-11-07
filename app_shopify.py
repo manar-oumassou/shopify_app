@@ -334,6 +334,7 @@ elif page == "Forecast":
             st.plotly_chart(forecast_fig)
                         # Download button for the forecasted values
                         # Create DataFrame for Download
+                        
             forecast_df = pd.DataFrame({
                 "Date": forecast_real_scale.index,
                 "Forecasted Sales": forecast_real_scale.values,
@@ -389,7 +390,6 @@ elif page == "Forecast":
                 'mason': (1, 1, 3, 0, 0, 2),
                 'woody': (2, 1, 3, 2, 0, 0),
                 'luca2': (2, 1, 3, 1, 0, 1),
-                'mateo': (3, 0, 0, 0, 1, 1),
                 'gerald': (1, 1, 2, 2, 0, 0),
                 'gabriel': (2, 1, 3, 2, 0, 2),
                 'jaxon': (0, 0, 3, 2, 0, 1),
@@ -397,22 +397,89 @@ elif page == "Forecast":
                 'rowan': (2, 1, 3, 1, 1, 1),
                 'joseph': (0, 0, 1, 0, 0, 1)
             }
+        forecast_results = []
+        forecast_steps1 = st.slider("Forecast steps:", min_value=1, max_value=24, value=2)
 
         # Assuming forecast_data and data have been loaded previously
         if 'Produit' in forecast_data.columns and 'Ventes totales' in forecast_data.columns:
             # Preprocess data
             data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
             data = data.dropna(subset=['Date', 'Produit', 'Quantité nette'])
-            
-            # Aggregate data by product and month
+
+            # Agrégation des données par produit et mois
             data['Month'] = data['Date'].dt.to_period('M')
             monthly_sales = data.groupby(['Produit', 'Month'])['Quantité nette'].sum().reset_index()
             monthly_sales['Log_Sales'] = np.log1p(monthly_sales['Quantité nette'])
 
-            # Select Product from dropdown
+            # Sélectionner un produit du menu déroulant
             product_list = list(best_configs.keys())
             selected_product = st.selectbox("Select a product for forecasting:", product_list)
 
+            # Obtenir la dernière date des données pour les aligner
+            max_date = monthly_sales['Month'].max().to_timestamp()
+           
+            # For each product, generate forecasts
+            for product in product_list:
+                # Filtrer les données pour le produit sélectionné
+                product_data = monthly_sales[monthly_sales['Produit'] == product]
+                product_series = product_data.set_index('Month')['Log_Sales']
+                product_series.index = product_series.index.to_timestamp()  # Convertir PeriodIndex en Timestamp
+
+                # Configuration SARIMA pour le produit sélectionné
+                if product in best_configs:
+                    order = best_configs[product][:3]
+                    seasonal_order = best_configs[product][3:] + (12,)
+                else:
+                    order = (1, 1, 1)
+                    seasonal_order = (1, 1, 1, 12)
+
+                # Filtrer les données pour les 3 dernières années
+                last_three_years = product_series[product_series.index >= (product_series.index.max() - pd.DateOffset(years=3))]
+
+                # Division train-test
+                train_size = int(len(last_three_years) * 0.8)
+                train, test = last_three_years[:train_size], last_three_years[train_size:]
+
+                # Entraîner le modèle SARIMA
+                model = SARIMAX(train, order=order, seasonal_order=seasonal_order, enforce_stationarity=False, enforce_invertibility=False)
+                model_fit = model.fit(disp=False)
+
+                # Forecast avec le nombre de pas spécifié
+                forecast_steps = len(test) + forecast_steps1
+                
+                # Unifier les dates de prévisions pour tous les produits
+                # Commencer à la même date pour chaque produit
+                forecast_dates = pd.date_range(start=max_date + pd.DateOffset(months=1), periods=forecast_steps, freq='M')
+
+                # Faire la prévision
+                forecast = model_fit.get_forecast(steps=forecast_steps)
+                forecast_values = forecast.predicted_mean
+                forecast_ci = forecast.conf_int()
+
+                # Revertir la transformation log
+                forecast_sales = np.expm1(forecast_values)
+                lower_ci = np.expm1(forecast_ci.iloc[:, 0])
+                upper_ci = np.expm1(forecast_ci.iloc[:, 1])
+
+                # Créer un DataFrame avec les résultats
+                forecast_data = pd.DataFrame({
+                    'Produit': product,
+                    'Date': forecast_dates,
+                    'Prévision': forecast_sales
+                })
+
+                forecast_results.append(forecast_data)
+            
+            
+            forecast_table = pd.concat(forecast_results, ignore_index=True)
+            pivot_forecast = forecast_table.pivot_table(index='Produit',
+                                columns='Date',
+                                values='Prévision',  # Only include the 'Prévision' column
+                                aggfunc='first'
+                            )
+            pivot_forecast.columns = [f'Prévision_{col.strftime("%Y-%m-%d")}' for col in pivot_forecast.columns]
+
+            
             # Filter data for the selected product
             product_data = monthly_sales[monthly_sales['Produit'] == selected_product]
             product_series = product_data.set_index('Month')['Log_Sales']
@@ -440,7 +507,6 @@ elif page == "Forecast":
             model_fit = model.fit(disp=False)
 
             # Forecast with specified steps
-            forecast_steps1 = st.slider("Forecast steps:", min_value=1, max_value=24, value=2)
             forecast_steps = len(test) + forecast_steps1
             forecast = model_fit.get_forecast(steps=forecast_steps)
             forecast_values = forecast.predicted_mean
@@ -496,16 +562,18 @@ elif page == "Forecast":
             # Show plot in Streamlit
             st.plotly_chart(fig)
            
-            # Display Forecasted Values
-            st.write("### Forecasted Values")
-            st.write(forecast_sales)
+            # Ajouter les résultats à la liste des résultats
+            st.write("### Forecasted Data Table")
+            st.write(pivot_forecast)
                 # Create DataFrame for download
             forecast_df = pd.DataFrame({
+                'Produit': product,
                 "Date": forecast_sales.index,
                 "Forecasted Sales": forecast_sales.values,
                 "Lower CI": lower_ci.values,
                 "Upper CI": upper_ci.values
             })
+            
 
             # Add download button for the forecasted values
             csv = forecast_df.to_csv(index=False).encode('utf-8')
