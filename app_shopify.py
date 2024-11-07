@@ -18,7 +18,7 @@ if 'data2' not in st.session_state:
 # Function to load data
 @st.cache_data
 def load_data(file):
-    data = pd.read_csv(file)
+    data = pd.read_csv(file, encoding='utf-8')
     if 'Date' in data.columns:
         data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
     return data
