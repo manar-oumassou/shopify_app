@@ -56,7 +56,10 @@ if page == "Analysis":
         # Basic Summary Statistics
         st.subheader("Summary Statistics")
         st.write(data.describe())
-        
+                # Average Quantity Sold per Product with and without Promotion
+        data['Produit'] = data['Produit'].str.split('|').str[0].str.strip()
+        # Assuming 'Produit' is the column containing the full product names
+        data['Produit'] = data['Produit'].str.split('-').str[0].str.strip().str.lower()
         # Time Series Plot for Sales Over Time
         st.subheader("Sales Over Time")
         if 'Date' in data.columns and 'Ventes totales' in data.columns:
@@ -191,20 +194,19 @@ if page == "Analysis":
             st.warning("Required columns 'Date' and 'Expédition' are not available for shipping cost analysis.")
 
         # New Analysis: Product-Level Profit Analysis
-        st.subheader("Product-Level Profit Analysis")
+        st.subheader("Product-orders Analysis")
         if 'Produit' in data.columns and 'Ventes nettes' in data.columns and 'Expédition' in data.columns:
             # Group by product to analyze profitability
-            product_profitability = data.groupby('Produit').agg({
-                'Ventes nettes': 'sum',
-                'Expédition': 'sum'
+            data2 = data[data["Quantité nette"]>0]
+            product_profitability = data2.groupby('Produit').agg({
+                'Commande': 'count'
             })
-            product_profitability['Net Profit'] = product_profitability['Ventes nettes'] - product_profitability['Expédition']
-            top_profitable_products = product_profitability['Net Profit'].nlargest(10)
+            top_profitable_products = product_profitability['Commande'].nlargest(10)
             
             # Plot top profitable products
             fig11 = px.bar(top_profitable_products, x=top_profitable_products.index, y=top_profitable_products.values, 
                         labels={'x': 'Product', 'y': 'Net Profit'},
-                        title='Top 10 Profitable Products')
+                        title='Top 10 Products orders of all time')
             st.plotly_chart(fig11)
         else:
             st.warning("Required columns 'Produit', 'Ventes nettes', and 'Expédition' are not available for profitability analysis.")
@@ -252,88 +254,70 @@ elif page == "Forecast":
         # Ensure the 'Date' column is in datetime format without timezone
         data['Date'] = pd.to_datetime(data['Date'], errors='coerce').dt.tz_localize(None)
 
-        # Filter out any missing dates in the Forecast page without affecting other pages
+        # Filter out missing dates
         forecast_data = data.dropna(subset=['Date']).copy()
         forecast_data.set_index('Date', inplace=True)
 
-        # Total Revenue Forecast with SARIMA
-        st.subheader("Forecasting Total Sales (CA)")
+        st.header("Sales Forecasting with Prophet")
 
+        # Total Revenue Forecast with Prophet
+        st.subheader("Prophet Model Forecast for Total Sales (CA)")
         if 'Ventes totales' in forecast_data.columns:
             # Data Cleaning
             columns_to_drop = [
-                'Emplacements de PDV', 'Pays de facturation', 'Région de facturation', 
-                'Ville de facturation', 'Pays d\'expédition', 'Région d\'expédition', 
+                'Emplacements de PDV', 'Pays de facturation', 'Région de facturation',
+                'Ville de facturation', 'Pays d\'expédition', 'Région d\'expédition',
                 'Ville d\'expédition', 'Type de produit'
             ]
-            data_cleaned = data.drop(columns=columns_to_drop, errors='ignore')
-            data_cleaned = data_cleaned.dropna(subset=['Produit'])
-            data_cleaned['Date'] = pd.to_datetime(data_cleaned['Date'], errors='coerce')
-            data_cleaned = data_cleaned.dropna(subset=['Date'])
+            data_cleaned = data.drop(columns=columns_to_drop, errors='ignore').dropna(subset=['Produit'])
+            data_cleaned['Date'] = pd.to_datetime(data_cleaned['Date'], errors='coerce').dt.tz_localize(None)
             data_cleaned.set_index('Date', inplace=True)
 
-            # Monthly Resampling and Plotting
-            monthly_sales = data_cleaned['Ventes totales'].resample('M').sum()
-            
-            # Log Transformation
-            log_sales = np.log(monthly_sales.replace(0, np.nan)).dropna()
- 
+            # Monthly Resampling
+            monthly_sales = data_cleaned['Ventes totales'].resample('M').sum().reset_index()
+            monthly_sales.columns = ['ds', 'y']
+            monthly_sales['y'] = np.log1p(monthly_sales['y'])  # Log-transform to stabilize variance
 
-            # Differencing
-            log_sales_diff = log_sales.diff().dropna()
+            # Prophet Model Fitting
+            model = Prophet(yearly_seasonality=True, daily_seasonality=False)
+            model.add_seasonality(name='monthly', period=30.5, fourier_order=5)
+            model.fit(monthly_sales)
 
-            # Augmented Dickey-Fuller Test
-            adf_result_log_diff = adfuller(log_sales_diff)
-            adf_log_diff_p_value = adf_result_log_diff[1]
+            # Forecast period
+            forecast_extension = st.slider("Select the number of months to forecast:", min_value=1, max_value=24, value=3)
+            future = model.make_future_dataframe(periods=forecast_extension, freq='M')
+            forecast = model.predict(future)
 
-            # Seasonal Decomposition
-            decomposition = seasonal_decompose(log_sales_diff, model='additive', period=12)
+            # Reverse log transformation for interpretability
+            forecast['yhat'] = np.expm1(forecast['yhat'])
+            forecast['yhat_lower'] = np.expm1(forecast['yhat_lower'])
+            forecast['yhat_upper'] = np.expm1(forecast['yhat_upper'])
+            monthly_sales['y'] = np.expm1(monthly_sales['y'])  # Reverse on actual data
 
-            # ADF Test on residuals
-            residuals = decomposition.resid.dropna()
-            adf_result_residuals = adfuller(residuals)
-            adf_residuals_p_value = adf_result_residuals[1]
-            st.write(f"ADF Test p-value on Residuals: {adf_residuals_p_value:.4f}")
+            # Plotting Prophet Forecast with Plotly
+            fig_prophet = go.Figure()
+            fig_prophet.add_trace(go.Scatter(x=monthly_sales['ds'], y=monthly_sales['y'], mode='lines', name='Original Sales'))
+            fig_prophet.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='Forecasted Sales',line=dict(dash='dash', color='red')))
+            fig_prophet.add_trace(go.Scatter(
+                x=forecast['ds'], y=forecast['yhat_upper'], mode='lines', line=dict(width=0),
+                showlegend=False
+            ))
+            fig_prophet.add_trace(go.Scatter(
+                x=forecast['ds'], y=forecast['yhat_lower'], mode='lines', line=dict(width=0),
+                fill='tonexty', name='Confidence Interval', fillcolor='rgba(255,165,0,0.2)'
+            ))
+            fig_prophet.update_layout(title=f"Forecast for Total Sales (CA) for the next {forecast_extension} weeks", xaxis_title="Date", yaxis_title="Total Sales (CA)")
+            st.plotly_chart(fig_prophet)
 
-            # Train-Test Split and Forecast Extension
-            train_size = int(len(log_sales_diff) * 0.85)
-            train, test = log_sales_diff[:train_size], log_sales_diff[train_size:]
-            forecast_extension = st.slider("Select the number of steps to extend the forecast:", min_value=1, max_value=24, value=3)
-
-            # SARIMA Model Fitting and Forecasting
-            sarima_model = SARIMAX(train, order=(1, 1, 1), seasonal_order=(1, 1, 1, 12))
-            sarima_results = sarima_model.fit()
-            forecast_steps = len(test) + forecast_extension
-            forecast = sarima_results.get_forecast(steps=forecast_steps)
-            forecast_values = forecast.predicted_mean
-            forecast_ci = forecast.conf_int()
-
-            # Convert forecast back to original scale
-            last_log_value_train = log_sales.iloc[train_size - 1]
-            forecast_log_values_real_scale = forecast_values.cumsum() + last_log_value_train
-            forecast_real_scale = np.exp(forecast_log_values_real_scale)
-
-            # Plot the Original Data and Forecast
-            st.write("### SARIMA Model Forecast on Original Sales Data Scale")
-            forecast_fig = go.Figure()
-            forecast_fig.add_trace(go.Scatter(x=monthly_sales.index, y=monthly_sales, mode='lines', name='Original Sales'))
-            forecast_fig.add_trace(go.Scatter(x=forecast_real_scale.index, y=forecast_real_scale, mode='lines', name='Forecast', line=dict(dash='dash', color='red')))
-            forecast_fig.update_layout(title='SARIMA Forecast on Original Sales Data Scale', xaxis_title='Date', yaxis_title='Total Sales (CA)')
-            st.plotly_chart(forecast_fig)
-                        # Download button for the forecasted values
-                        # Create DataFrame for Download
-                        
+            # Create Downloadable Forecast CSV
             forecast_df = pd.DataFrame({
-                "Date": forecast_real_scale.index,
-                "Forecasted Sales": forecast_real_scale.values,
-            })
+                "Date": forecast['ds'],
+                "Forecasted Sales": forecast['yhat'],
+                "Lower CI": forecast['yhat_lower'],
+                "Upper CI": forecast['yhat_upper']
+            }).tail(forecast_extension)
             csv = forecast_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download forecasted values as CSV",
-                data=csv,
-                file_name="forecasted_sales.csv",
-                mime="text/csv"
-            )
+            st.download_button(label="📥 Download forecasted values as CSV", data=csv, file_name="forecasted_sales.csv", mime="text/csv")
 
         else:
             st.warning("Required column 'Ventes totales' not found for revenue forecast.")
@@ -391,6 +375,9 @@ elif page == "Forecast":
         # Assuming forecast_data and data have been loaded previously
         if 'Produit' in forecast_data.columns and 'Ventes totales' in forecast_data.columns:
             # Preprocess data
+            data['Produit'] = data['Produit'].str.split('|').str[0].str.strip()
+        # Assuming 'Produit' is the column containing the full product names
+            data['Produit'] = data['Produit'].str.split('-').str[0].str.strip().str.lower()
             data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
             data = data.dropna(subset=['Date', 'Produit', 'Quantité nette'])
 
@@ -458,6 +445,7 @@ elif page == "Forecast":
                         values='Prévision',  # Only include the 'Prévision' column
                         aggfunc='first'
                     )
+            pivot_forecast.columns = pd.to_datetime(pivot_forecast.columns, errors='coerce')
             pivot_forecast.columns = [f'Prévision_{col.strftime("%Y-%m-%d")}' for col in pivot_forecast.columns]
 
             # Plot forecast with Plotly
@@ -529,6 +517,100 @@ elif page == "Forecast":
 
         else:
             st.write("Please upload a dataset to proceed.")
+        data['Date'] = pd.to_datetime(data['Date'], errors='coerce').dt.tz_localize(None)
+           # Filter out any missing dates in the Forecast page without affecting other pages
+        forecast_data = data.dropna(subset=['Date']).copy()
+        forecast_data.set_index('Date', inplace=True)
+
+        # Prophet Forecasting Section
+        st.subheader("Prophet Model - Custom Forecast Period")
+
+        # Data preparation for Prophet
+        # Filter data for the last 7 years
+        five_years_ago = pd.Timestamp.now().tz_localize(None) - pd.DateOffset(years=7)
+        filtered_data = data[data['Date'] >= five_years_ago]
+
+        # Resample to weekly data and reset index for Prophet
+        weekly_data = filtered_data.set_index('Date').resample('W')['Quantité nette'].sum().fillna(0).reset_index()
+
+        # Prepare data for Prophet
+        prophet_data = weekly_data.rename(columns={'Date': 'ds', 'Quantité nette': 'y'})
+        prophet_data['y'] = np.log1p(prophet_data['y'])  # Log-transform to stabilize variance
+
+        # Initialize and fit the Prophet model
+        model = Prophet(weekly_seasonality=True, yearly_seasonality=True, daily_seasonality=False)
+        model.add_seasonality(name='monthly', period=30.5, fourier_order=5)  # Optional: monthly seasonality
+
+        # Fit model on the dataset
+        model.fit(prophet_data)
+
+        # Forecast steps slider (in weeks)
+        forecast_steps2 = st.slider("Forecast steps (weeks):", min_value=1, max_value=24, value=2)
+
+        # Create future dates DataFrame based on selected forecast steps
+        future = model.make_future_dataframe(periods=forecast_steps2, freq='W')
+
+        # Forecast
+        forecast = model.predict(future)
+
+        # Reverse log transformation for interpretability
+        forecast['yhat'] = np.expm1(forecast['yhat'])
+        forecast['yhat_lower'] = np.expm1(forecast['yhat_lower'])
+        forecast['yhat_upper'] = np.expm1(forecast['yhat_upper'])
+        prophet_data['y'] = np.expm1(prophet_data['y'])  # Reverse on actual data
+
+        # Plot Prophet forecast in Plotly
+        fig = go.Figure()
+
+        # Actual data
+        fig.add_trace(go.Scatter(
+            x=prophet_data['ds'],
+            y=prophet_data['y'],
+            mode='lines',
+            name='Actual Quantité nette',
+            line=dict(color='blue')
+        ))
+
+        # Forecasted data
+        fig.add_trace(go.Scatter(
+            x=forecast['ds'],
+            y=forecast['yhat'],
+            mode='lines',
+            name=f'Prophet Forecast ({forecast_steps2} Weeks)',
+            line=dict(color='orange')
+        ))
+
+        # Confidence interval
+        fig.add_trace(go.Scatter(
+            x=forecast['ds'].tolist() + forecast['ds'][::-1].tolist(),
+            y=forecast['yhat_upper'].tolist() + forecast['yhat_lower'][::-1].tolist(),
+            fill='toself',
+            fillcolor='rgba(255, 165, 0, 0.2)',  # Light orange fill
+            line=dict(color='rgba(255, 165, 0, 0)'),  # No outline
+            showlegend=False,
+            name='Confidence Interval'
+        ))
+
+        # Update layout
+        fig.update_layout(
+            title=f"Forecast for Next {forecast_steps2} Weeks",
+            xaxis_title="Date",
+            yaxis_title="Quantité nette",
+            legend_title="Legend"
+        )
+
+        # Display the plot in Streamlit
+        st.plotly_chart(fig)
+
+        # Display forecasted data table for the selected weeks
+        st.write("### Forecasted Weekly Sales Data")
+        forecast_table = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail(forecast_steps2)
+        forecast_table.columns = ['Date', 'Forecasted Sales', 'Lower CI', 'Upper CI']
+        forecast_table['Date'] = forecast_table['Date'].dt.strftime('%Y-%m-%d')  # Format dates
+        st.write(forecast_table)
+
+        # Download button for the Prophet forecasted va
+
     else:
         st.info("Please upload a dataset on the Home page.")
 elif page == "Promotion Analysis":
@@ -566,6 +648,12 @@ elif page == "Promotion Analysis":
         st.plotly_chart(fig2)
 
         # Average Quantity Sold per Product with and without Promotion
+        data2['Produit'] = data2['Produit'].str.split('|').str[0].str.strip()
+        # Assuming 'Produit' is the column containing the full product names
+        data2['Produit'] = data2['Produit'].str.split('-').str[0].str.strip().str.lower()
+
+        # Now, 'Produit' will contain only the first word, e.g., "Phoenix"
+
         avg_quantity_per_product = data2.groupby(['Produit', 'Promotion']).mean(numeric_only=True)['Quantité nette'].unstack().fillna(0)
         avg_quantity_per_product.columns = ['No Promotion', 'With Promotion']
         fig3 = px.bar(
@@ -585,28 +673,32 @@ elif page == "Promotion Analysis":
         fig8 = px.bar(promo_purchase_ratio, x=promo_purchase_ratio.index, y=promo_purchase_ratio,
                   title='Promotion Purchase Timing (Hourly)', labels={'y': 'Purchase Ratio (%)'})
         st.plotly_chart(fig8)
-        # Calculate AOV with promotion status
-        aov_promotion = data2.groupby(['Date', 'Promotion']).agg({'Ventes totales': 'sum', 'Référence de commande': 'nunique'})
-        aov_promotion['AOV'] = aov_promotion['Ventes totales'] / aov_promotion['Référence de commande']
+        # Assuming data2 is your DataFrame with 'Date' and 'Promotion' columns
+        data2['Date'] = pd.to_datetime(data2['Date'], errors='coerce')  # Convert Date to datetime
+        data2['Day'] = data2['Date'].dt.isocalendar().day  # Extract day of the week (1=Monday, ..., 7=Sunday)
 
-        # Group by month and promotion status
-        aov_monthly = aov_promotion.groupby([aov_promotion.index.get_level_values(0).to_period("M"), 'Promotion']).mean()['AOV']
+        # Group by day of the week to get the count of sales during promotional and non-promotional periods
+        day_promo_sales = data2[data2['Promotion']].groupby('Day').size()
+        day_all_sales = data2.groupby('Day').size()
 
-        # Flatten and prepare the data for Plotly
-        aov_monthly_df = aov_monthly.unstack().reset_index()
-        aov_monthly_df.columns = ['Month', 'No Promotion', 'With Promotion']
-        aov_monthly_df['Month'] = aov_monthly_df['Month'].dt.to_timestamp()  # Convert period index to timestamp
+        # Calculate the ratio of promotional purchases to all purchases for each day
+        promo_purchase_ratio = (day_promo_sales / day_all_sales).fillna(0) * 100
 
-        # Plot with Plotly and set color scheme
-        fig7 = px.line(
-            aov_monthly_df, 
-            x='Month', 
-            y=['No Promotion', 'With Promotion'],
-            title='Promotion Impact on Average Order Value (AOV)',
-            color_discrete_sequence=["blue", "red"]  # Setting colors
+        # Map day numbers to names for better readability in the chart
+        day_name_mapping = {1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday', 7: 'Sunday'}
+        promo_purchase_ratio.index = promo_purchase_ratio.index.map(day_name_mapping)
+
+        # Plot the daily promotional purchase ratio
+        fig9 = px.bar(
+            promo_purchase_ratio, 
+            x=promo_purchase_ratio.index, 
+            y=promo_purchase_ratio.values,
+            title='Promotion Purchase Timing (daily)', 
+            labels={'x': 'Day of the Week', 'y': 'Purchase Ratio (%)'}
         )
-        st.plotly_chart(fig7)
 
+        # Display the chart in Streamlit
+        st.plotly_chart(fig9)
     else:
         st.write("Please upload a dataset to proceed.")
 # If data is missing, display a message on each page
