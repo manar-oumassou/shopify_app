@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="Sales Data Analysis and Forecasting", layout="wide")
 
 if 'data' not in st.session_state:
-    st.session_state['data'] = None  # Initialize data to None if not yet loaded
+    st.session_state['data'] = None  # InitPialize data to None if not yet loaded
 if 'data2' not in st.session_state:
     st.session_state['data2'] = None  # Initialize data2 similarly
 
@@ -38,14 +38,15 @@ if page == "Home":
         data = load_data(uploaded_file)
         st.session_state['data'] = data
         st.session_state['data2'] = data.copy()  # Make a copy for data2 if needed separately
+        st.session_state['data3'] = data.copy()  # Make a copy for data2 if needed separately
         
         st.success("File uploaded and data loaded successfully!")
-        st.write("Now, navigate to **Analysis** or **Forecast** to explore the data.")
+        st.write("Now, navigate to *Analysis* or *Forecast* to explore the data.")
 
 # Access data from session state on other pages
 data = st.session_state.get('data')
 data2 = st.session_state.get('data2')
-
+data3 = st.session_state.get('data3')
 
 # Analysis Page
 if page == "Analysis":
@@ -53,9 +54,7 @@ if page == "Analysis":
         # Displaying the Data Analysis Header
         st.header("Data Analysis Dashboard")
         
-        # Basic Summary Statistics
-        st.subheader("Summary Statistics")
-        st.write(data.describe())
+  
                 # Average Quantity Sold per Product with and without Promotion
         data['Produit'] = data['Produit'].str.split('|').str[0].str.strip()
         # Assuming 'Produit' is the column containing the full product names
@@ -75,21 +74,87 @@ if page == "Analysis":
         # Top Products by Sales
         st.subheader("Top Products by Sales")
         if 'Produit' in data.columns and 'Ventes totales' in data.columns:
+            
+            # Regrouper par produit et calculer les ventes totales
             top_products = data.groupby('Produit').sum(numeric_only=True)['Ventes totales'].nlargest(10)
-            fig2 = px.bar(top_products, x=top_products.index, y='Ventes totales', title='Top 10 Products by Sales')
+            
+            # Calculer le pourcentage des ventes totales pour chaque produit
+            total_sales = top_products.sum()
+            product_sales_percentage = (top_products / total_sales) * 100
+            
+            # Créer un DataFrame pour l'affichage avec Plotly
+            products_df = top_products.reset_index()
+            products_df['Sales Rate (%)'] = product_sales_percentage.values
+            
+            # Tracer le graphique en barres avec les pourcentages
+            fig2 = px.bar(
+                products_df, 
+                x='Produit', 
+                y='Ventes totales',
+                text='Sales Rate (%)',
+                title='Top 10 Products by Sales',
+                labels={'Ventes totales': 'Total Sales', 'Produit': 'Product'}
+            )
+            
+            # Ajuster l'affichage du texte des pourcentages
+            fig2.update_traces(
+                texttemplate='%{text:.2f}%', 
+                textposition='outside',
+                cliponaxis=False  # Évite que le texte soit coupé
+            )
+            
+            # Ajuster l'échelle de l'axe y pour laisser de l'espace au texte
+            fig2.update_layout(
+                yaxis=dict(title='Total Sales', range=[0, top_products.max() * 1.2])
+            )
+            
+            # Afficher le graphique
             st.plotly_chart(fig2)
+
         else:
             st.warning("Required columns 'Produit' and 'Ventes totales' not found in data.")
         
-        # Sales by Region
         st.subheader("Sales by Region")
         if 'Pays de facturation' in data.columns and 'Ventes totales' in data.columns:
+            
+            # Grouping data by region and calculating total sales
             sales_by_region = data.groupby('Pays de facturation').sum(numeric_only=True)['Ventes totales'].nlargest(10)
-            fig3 = px.bar(sales_by_region, x=sales_by_region.index, y='Ventes totales', title='Top 10 Regions by Sales')
+            
+            # Calculating the percentage of total sales for each region
+            total_sales = sales_by_region.sum()
+            sales_by_region_percentage = (sales_by_region / total_sales) * 100
+            
+            # Creating a DataFrame to use with Plotly
+            sales_df = sales_by_region.reset_index()
+            sales_df['Sales Rate (%)'] = sales_by_region_percentage.values
+            
+            # Plotting the bar chart with percentage
+            fig3 = px.bar(
+                sales_df, 
+                x='Pays de facturation', 
+                y='Ventes totales',
+                text='Sales Rate (%)',
+                title='Top 10 Regions by Sales',
+                labels={'Ventes totales': 'Total Sales', 'Pays de facturation': 'Region'}
+            )
+            
+            # Adding percentage text on bars with adjustments
+            fig3.update_traces(
+                texttemplate='%{text:.2f}%', 
+                textposition='outside', 
+                cliponaxis=False  # Prevents clipping of text outside the plot area
+            )
+            
+            # Adjust y-axis range to allow space for text
+            fig3.update_layout(
+                yaxis=dict(title='Total Sales', range=[0, sales_by_region.max() * 1.2])
+            )
+            
+            # Displaying the chart
             st.plotly_chart(fig3)
+
         else:
             st.warning("Region data is not available.")
-        
         # New Analysis: Average Order Value (AOV) Over Time
         st.subheader("Average Order Value (AOV) Over Time")
         if 'Ventes totales' in data.columns and 'Référence de commande' in data.columns:
@@ -124,44 +189,76 @@ if page == "Analysis":
         else:
             st.warning("Discount data is not available.")
         
-        # New Analysis: Return Rate by Product
         st.subheader("Top Products by Return Rate")
 
         # Check if necessary columns are in the data
         if 'Produit' in data.columns and 'Quantité nette' in data.columns:
             # Convert Quantité nette to numeric, if it's not already, and filter for negative values
-            data['Quantité nette'] = pd.to_numeric(data['Quantité nette'], errors='coerce')
-            negative_quantities = data[data['Quantité nette'] < 0]
+            data4 = data.copy()
+            data4['Quantité nette'] = pd.to_numeric(data4['Quantité nette'], errors='coerce')
 
-            # Group by product and sum net quantities to see products with highest return rates
-            product_returns = negative_quantities.groupby('Produit').agg({
-                'Quantité nette': 'sum'
-            })
-            
-            # Calculate absolute value of Quantité nette to represent it as a positive return rate indicator
-            product_returns['Return Rate'] = abs(product_returns['Quantité nette'])
+            # Separate the negative and positive quantities
+            negative_quantities = data4[data4['Quantité nette'] < 0]
+            positive_quantities = data4[data4['Quantité nette'] > 0]
+
+            # Calculate total sales as the absolute sum of positive quantities
+
+            # Calculate total returns (negative quantities)
+            total_returns = negative_quantities.groupby('Produit')['Quantité nette'].sum().abs()
+
+            # Calculate total orders as the sum of absolute quantities (positive or negative)
+            data4['Quantité nette'] = data4['Quantité nette'].abs()  # Make all values positive
+            total_orders = data4.groupby('Produit')['Quantité nette'].sum()
+
+            # Calculate the return rate as (Total Returns / Total Orders) * 100
+            return_rate = (total_returns / total_orders) * 100
 
             # Select top 10 products by return rate
-            top_returns = product_returns['Return Rate'].nlargest(10)
+            top_return_rates = return_rate.nlargest(10)
 
             # Plot in Streamlit
-            st.subheader("Top 10 Products by Return Rate (Negative Quantité Nette)")
-            if not top_returns.empty:
-                fig = px.bar(top_returns, x=top_returns.index, y=top_returns.values, 
-                            labels={'x': 'Product', 'y': 'Return Rate (Absolute Quantité Nette)'},
-                            title='Top 10 Products by Return Rate (Negative Quantité Nette)')
+            st.subheader("Top 10 Products by Return Rate (%)")
+            if not top_return_rates.empty:
+                fig = px.bar(
+                    top_return_rates,
+                    x=top_return_rates.index,
+                    y=top_return_rates.values,
+                    labels={'x': 'Product', 'y': 'Return Rate (%)'},
+                    title='Top 10 Products by Return Rate (%)',
+                    text_auto=True
+                )
                 st.plotly_chart(fig)
             else:
-                st.write("No products with a negative quantity net were found.")
+                st.write("No products with return data were found.")
         else:
             st.warning("Required columns 'Produit' and 'Quantité nette' are not in the data.")
-        # New Analysis: Customer Geographic Distribution
+
         st.subheader("Customer Geographic Distribution")
         if 'Pays de facturation' in data.columns:
-            country_counts = data['Pays de facturation'].value_counts().nlargest(10)
-            fig8 = px.bar(country_counts, x=country_counts.index, y=country_counts.values, 
+            country_counts = data['Pays de facturation'].value_counts()
+            
+            # Sélectionner les 10 premiers pays
+            top_10_countries = country_counts.head(10)
+            
+            # Calculer le taux (rate) pour chaque pays
+            total_orders = top_10_countries.sum()
+            country_rates = top_10_countries / total_orders * 100  # Le taux en pourcentage
+            country_rates = country_rates.round(2)
+
+            # Créer un DataFrame avec les deux informations (nombre et taux)
+            country_df = pd.DataFrame({
+                'Number of Orders': top_10_countries,
+                'Order Rate (%)': country_rates
+            })
+            
+            # Créer le graphique avec le taux
+            fig8 = px.bar(country_df, 
+                        x=country_df.index, 
+                        y='Number of Orders', 
+                        text='Order Rate (%)',  # Afficher le taux sur les barres
                         labels={'x': 'Country', 'y': 'Number of Orders'},
                         title='Top 10 Countries by Order Count')
+            
             st.plotly_chart(fig8)
         else:
             st.warning("Column 'Pays de facturation' is not available for geographic distribution analysis.")
@@ -179,19 +276,6 @@ if page == "Analysis":
             st.plotly_chart(fig9)
         else:
             st.warning("Required columns 'Date' and 'Ventes totales' not found for growth rate analysis.")
-
-        # New Analysis: Shipping Cost Impact Over Time
-        st.subheader("Shipping Cost Impact Over Time")
-        if 'Date' in data.columns and 'Expédition' in data.columns:
-            data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
-            shipping_costs = data.groupby(data['Date'].dt.to_period("M")).sum(numeric_only=True)['Expédition']
-            shipping_costs.index = shipping_costs.index.to_timestamp()
-            fig10 = px.line(shipping_costs, x=shipping_costs.index, y=shipping_costs.values, 
-                            labels={'x': 'Date', 'y': 'Total Shipping Costs'},
-                            title='Total Shipping Costs Over Time')
-            st.plotly_chart(fig10)
-        else:
-            st.warning("Required columns 'Date' and 'Expédition' are not available for shipping cost analysis.")
 
         # New Analysis: Product-Level Profit Analysis
         st.subheader("Product-orders Analysis")
@@ -306,7 +390,7 @@ elif page == "Forecast":
                 x=forecast['ds'], y=forecast['yhat_lower'], mode='lines', line=dict(width=0),
                 fill='tonexty', name='Confidence Interval', fillcolor='rgba(255,165,0,0.2)'
             ))
-            fig_prophet.update_layout(title=f"Forecast for Total Sales (CA) for the next {forecast_extension} weeks", xaxis_title="Date", yaxis_title="Total Sales (CA)")
+            fig_prophet.update_layout(title=f"Forecast for Total Sales (CA) for the next {forecast_extension} months", xaxis_title="Date", yaxis_title="Total Sales (CA)")
             st.plotly_chart(fig_prophet)
 
             # Create Downloadable Forecast CSV
@@ -633,34 +717,27 @@ elif page == "Promotion Analysis":
             color_discrete_sequence=["blue", "red"]  # Setting colors
         )
         st.plotly_chart(fig)
-
+     
         # Quantity Sold with and without Promotion
         quantity_impact = data2.groupby([data2['Date'].dt.to_period("M"), 'Promotion']).sum(numeric_only=True)[['Quantité nette']]
         quantity_impact = quantity_impact.unstack().fillna(0)
         quantity_impact.columns = ['No Promotion', 'With Promotion']
-        fig2 = px.line(
-            quantity_impact, 
-            x=quantity_impact.index.to_timestamp(), 
-            y=['No Promotion', 'With Promotion'],
-            title='Quantity Sold with vs Without Promotions Over Time',
-            color_discrete_sequence=["blue", "red"]  # Setting colors
-        )
-        st.plotly_chart(fig2)
 
+        data2 = data2[data2["Date"] > "01-08-2024" ] 
         # Average Quantity Sold per Product with and without Promotion
         data2['Produit'] = data2['Produit'].str.split('|').str[0].str.strip()
         # Assuming 'Produit' is the column containing the full product names
         data2['Produit'] = data2['Produit'].str.split('-').str[0].str.strip().str.lower()
 
         # Now, 'Produit' will contain only the first word, e.g., "Phoenix"
-
-        avg_quantity_per_product = data2.groupby(['Produit', 'Promotion']).mean(numeric_only=True)['Quantité nette'].unstack().fillna(0)
+        
+        avg_quantity_per_product = data2.groupby(['Produit', 'Promotion']).sum(numeric_only=True)['Quantité nette'].unstack().fillna(0)
         avg_quantity_per_product.columns = ['No Promotion', 'With Promotion']
         fig3 = px.bar(
             avg_quantity_per_product, 
             x=avg_quantity_per_product.index, 
             y=['No Promotion', 'With Promotion'],
-            title='Average Quantity Sold per Product: With vs Without Promotions',
+            title='Quantity Sold per Product: With vs Without Promotions',
             color_discrete_sequence=["blue", "red"]  # Setting colors
         )
         st.plotly_chart(fig3)
