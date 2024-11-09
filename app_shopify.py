@@ -323,10 +323,6 @@ if page == "Analysis":
             # Show a warning if the required columns are missing
             st.warning("Required columns 'Produit' and 'Réductions' are not in the data for discount analysis.")
 
-        
-        # Button to return to Home
-        if st.button("Return to Home"):
-            st.experimental_rerun()
     else:
         st.info("Please upload a dataset on the Home page.")
 
