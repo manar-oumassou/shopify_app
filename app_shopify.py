@@ -9,7 +9,27 @@ from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.seasonal import seasonal_decompose
 import plotly.graph_objects as go
 st.set_page_config(page_title="Sales Data Analysis and Forecasting", layout="wide")
-
+COLUMN_MAP_TO_FRENCH = {
+    "Order ID": "Référence de commande",
+    "Sale ID": "Identifiant de vente",
+    "Date": "Date",
+    "Order": "Commande",
+    "Transaction type": "Type de transaction",
+    "Sale type": "Type de vente",
+    "Sales channel": "Canal de vente",
+    "POS location": "Emplacements de PDV",
+    "Billing country": "Pays de facturation",
+    "Billing region": "Région de facturation",
+    "Net quantity": "Quantité nette",
+    "Gross sales": "Ventes brutes",
+    "Discounts": "Réductions",
+    "Returns": "Retours",
+    "Net sales": "Ventes nettes",
+    "Shipping": "Expédition",
+    "Taxes": "Taxes",
+    "Total sales": "Ventes totales",
+    "Product": "Produit"
+}
 if 'data' not in st.session_state:
     st.session_state['data'] = None  # InitPialize data to None if not yet loaded
 if 'data2' not in st.session_state:
@@ -19,6 +39,9 @@ if 'data2' not in st.session_state:
 @st.cache_data
 def load_data(file):
     data = pd.read_csv(file, encoding='utf-8')
+    # Check if any English columns are present and rename to French equivalents
+    if any(col in data.columns for col in COLUMN_MAP_TO_FRENCH.keys()):
+        data = data.rename(columns=COLUMN_MAP_TO_FRENCH)
     if 'Date' in data.columns:
         data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
     return data
@@ -405,16 +428,16 @@ elif page == "Forecast":
         # Product-Level Purchase Forecast with SARIMA
         st.subheader("Forecasting Monthly Purchases per Product")
         best_configs = {
-                'adam': (1, 0, 1, 0, 0, 1),
                 'archie': (0, 1, 2, 0, 1, 0),
                 'benjamin': (1, 1, 0, 1, 0, 1),
                 'brody': (1, 0, 0, 0, 1, 0),
+                'adam': (1, 0, 1, 0, 0, 1),
                 'caleb': (1, 1, 0, 1, 1, 1),
                 'cameron': (2, 0, 2, 1, 0, 1),
-                'carter-1': (0, 1, 1, 1, 1, 0),
+                # 'carter-1': (0, 1, 1, 1, 1, 0),
                 'louis': (0, 1, 0, 0, 1, 1),
                 'lincoln': (2, 1, 0, 1, 0, 0),
-                'gift-card': (2, 1, 1, 1, 0, 0),
+                # 'gift-card': (2, 1, 1, 1, 0, 0),
                 'dean': (0, 0, 1, 1, 0, 1),
                 'eliot': (1, 0, 0, 0, 1, 0),
                 'fabian': (2, 0, 0, 0, 1, 0),
@@ -588,12 +611,6 @@ elif page == "Forecast":
             # Add download button for the forecasted values
             csv = forecast_df.to_csv(index=False).encode('utf-8')
             
-            st.download_button(
-                label="📥 Download Forecasted Values as CSV",
-                data=csv,
-                file_name=f"{selected_product}_forecasted_sales.csv",
-                mime="text/csv"
-            )
 
         else:
             st.write("Please upload a dataset to proceed.")
