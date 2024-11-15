@@ -8,6 +8,7 @@ import plotly.express as px
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.seasonal import seasonal_decompose
 import plotly.graph_objects as go
+from prophet.diagnostics import cross_validation, performance_metrics
 st.set_page_config(page_title="Sales Data Analysis and Forecasting", layout="wide")
 COLUMN_MAP_TO_FRENCH = {
     "Order ID": "Référence de commande",
@@ -80,72 +81,75 @@ if page == "Correlation Analysis":
 
     if sales_file and conversions_file and budget_file and checkout_file:
         # Load main sales data
-        data = load_data(sales_file)
+        sales_data  = load_data(sales_file)
         
-        if 'Ventes totales' in data.columns:
+        if 'Ventes totales' in sales_data.columns:
             # Data Cleaning
+            conversion_data = pd.read_csv(conversions_file)
+            checkout_data = pd.read_csv(checkout_file)
+            budget_data = pd.read_excel(budget_file, sheet_name='Feuil1', skiprows=1)
+            
+            # Clean Sales Data
             columns_to_drop = [
                 'Emplacements de PDV', 'Pays de facturation', 'Région de facturation',
                 'Ville de facturation', 'Pays d\'expédition', 'Région d\'expédition',
                 'Ville d\'expédition', 'Type de produit'
             ]
-            data_cleaned = data.drop(columns=columns_to_drop, errors='ignore').dropna(subset=['Produit'])
+            data_cleaned = sales_data.drop(columns=columns_to_drop, errors='ignore').dropna(subset=['Produit'])
             data_cleaned['Date'] = pd.to_datetime(data_cleaned['Date'], errors='coerce').dt.tz_localize(None)
             data_cleaned.set_index('Date', inplace=True)
 
-            # Monthly Resampling for main sales data
-            monthly_sales = data_cleaned['Ventes totales'].resample('M').sum().reset_index()
-            monthly_sales.columns = ['ds', 'y']
-            monthly_sales['y'] = np.log1p(monthly_sales['y'])
+            # Weekly Resampling for main sales data
+            weekly_sales = data_cleaned['Ventes totales'].resample('W').sum().reset_index()
+            weekly_sales.columns = ['ds', 'y']
+            weekly_sales['y'] = np.log1p(weekly_sales['y'])
 
-            # Create a unified date index for all datasets to align them
-            unified_index = pd.date_range(start=monthly_sales['ds'].min(), end=monthly_sales['ds'].max(), freq='M')
+            # Unified date index
+            unified_index = pd.date_range(start=weekly_sales['ds'].min(), end=weekly_sales['ds'].max(), freq='W')
 
-            # Load and preprocess additional datasets
-            # 1. Load and resample 'total_conversion' data
-            data1 = pd.read_csv(conversions_file)
-            data1['month'] = pd.to_datetime(data1['month'], format='%Y-%m')
-            data1.set_index('month', inplace=True)
-            monthly_total_conversion = data1['total_conversion'].resample('M').sum().reindex(unified_index, fill_value=0)
+            # Process Conversion Data
+            conversion_data['week'] = pd.to_datetime(conversion_data['week'] + '-1', format='%Y-W%W-%w')
+            conversion_data.set_index('week', inplace=True)
+            conversion_data_resampled = conversion_data['total_conversion'].resample('W-SUN').sum()
 
-            # 2. Load and resample marketing budget data
-            budget_data = pd.read_excel(budget_file, sheet_name='Feuil1', skiprows=1)
+            # Process Budget Data
             budget_data.columns = ['Unnamed', 'Dates', 'Montant_MKT']
             budget_data = budget_data.dropna(subset=['Dates', 'Montant_MKT'])
             budget_data['Dates'] = pd.to_datetime(budget_data['Dates'], errors='coerce')
             budget_data.set_index('Dates', inplace=True)
-            monthly_budget = budget_data['Montant_MKT'].resample('M').sum().reindex(unified_index, fill_value=0)
+            weekly_budget = budget_data['Montant_MKT'].resample('W').sum().reindex(unified_index, fill_value=0)
 
-            # 3. Load and resample checkout data
-            checkout_data = pd.read_csv(checkout_file)
-            checkout_data['Created at'] = pd.to_datetime(checkout_data['Created at'], errors='coerce')    
-            monthly_checkout_count = checkout_data.resample('M', on='Created at').size()
-            monthly_checkout_count.index = monthly_checkout_count.index.to_period('M').to_timestamp('M')
-            monthly_checkout_count = monthly_checkout_count.asfreq('M').reindex(unified_index, fill_value=0)
+            # Process Checkout Data
+            checkout_data['Created at'] = pd.to_datetime(checkout_data['Created at'], errors='coerce')
+            weekly_checkout_count = checkout_data.resample('W', on='Created at').size()
+            weekly_checkout_count.index = weekly_checkout_count.index.to_period('W').to_timestamp('W')
+            weekly_checkout_count = weekly_checkout_count.asfreq('W').reindex(unified_index, fill_value=0)
 
-            # Combine all data into a single DataFrame with unified date index
+            # Combine all data into a single DataFrame
             combined_data = pd.DataFrame(index=unified_index)
-            combined_data['y'] = monthly_sales.set_index('ds').reindex(unified_index)['y'].fillna(0)
-            combined_data['total_conversion'] = monthly_total_conversion.reindex(unified_index, fill_value=0).values
-            combined_data['Montant_MKT'] = monthly_budget.reindex(unified_index, fill_value=0).values
-            combined_data['checkout_count'] = monthly_checkout_count.values
+            combined_data['y'] = weekly_sales.set_index('ds').reindex(unified_index)['y'].fillna(0)
+            combined_data['total_conversion'] = conversion_data_resampled.reindex(unified_index, fill_value=0).values
+            combined_data['Montant_MKT'] = weekly_budget.values
+            combined_data['checkout_count'] = weekly_checkout_count.values
 
             # Prophet Model Fitting
             model = Prophet(yearly_seasonality=True, daily_seasonality=False)
-            model.add_seasonality(name='monthly', period=30.5, fourier_order=5)
+            model.add_seasonality(name='weekly', period=7, fourier_order=5)
             model.add_regressor('total_conversion')
             model.add_regressor('Montant_MKT')
             model.add_regressor('checkout_count')
             model.fit(combined_data.reset_index().rename(columns={'index': 'ds'}))
 
-            # Forecast period selection
-            forecast_extension_value = st.slider("Months to forecast:", 1, 24, 7)
-            future = model.make_future_dataframe(periods=forecast_extension_value, freq='M')
+            # Add a slider for forecast period selection
+            forecast_extension_value = st.slider("Select number of weeks to forecast", min_value=1, max_value=52, value=7)
 
-            # Add future values for regressors, with both forward-fill and backfill for missing values
-            future['total_conversion'] = monthly_total_conversion.reindex(future['ds']).fillna(method='ffill').fillna(0).values
-            future['Montant_MKT'] = monthly_budget.reindex(future['ds']).fillna(method='ffill').fillna(0).values
-            future['checkout_count'] = monthly_checkout_count.reindex(future['ds']).fillna(method='ffill').fillna(0).values
+            # Prepare future DataFrame
+            future = model.make_future_dataframe(periods=forecast_extension_value, freq='W')
+
+            # Add future values for regressors
+            future['total_conversion'] = conversion_data_resampled.reindex(future['ds'], fill_value=0).fillna(method='ffill').fillna(0).values
+            future['Montant_MKT'] = weekly_budget.reindex(future['ds'], fill_value=0).fillna(method='ffill').fillna(0).values
+            future['checkout_count'] = weekly_checkout_count.reindex(future['ds'], fill_value=0).fillna(method='ffill').fillna(0).values
 
             # Make predictions
             forecast = model.predict(future)
@@ -168,10 +172,9 @@ if page == "Correlation Analysis":
                 x=forecast['ds'], y=forecast['yhat_lower'], mode='lines', line=dict(width=0),
                 fill='tonexty', name='Confidence Interval', fillcolor='rgba(255,165,0,0.2)'
             ))
-            fig_prophet.update_layout(title=f"Forecast for Total Sales (CA) for the next {forecast_extension_value} months",
+            fig_prophet.update_layout(title=f"Forecast for Total Sales (CA) for the next {forecast_extension_value} weeks",
                                     xaxis_title="Date", yaxis_title="Total Sales (CA)")
             st.plotly_chart(fig_prophet)
-
         else:
             st.error("Required column 'Ventes totales' not found in sales data.")
 
@@ -480,31 +483,33 @@ elif page == "Forecast":
             data_cleaned['Date'] = pd.to_datetime(data_cleaned['Date'], errors='coerce').dt.tz_localize(None)
             data_cleaned.set_index('Date', inplace=True)
 
-            # Monthly Resampling
-            monthly_sales = data_cleaned['Ventes totales'].resample('M').sum().reset_index()
-            monthly_sales.columns = ['ds', 'y']
-            monthly_sales['y'] = np.log1p(monthly_sales['y'])  # Log-transform to stabilize variance
+            # Weekly Resampling
+            weekly_sales = data_cleaned['Ventes totales'].resample('W').sum().reset_index()
+            weekly_sales.columns = ['ds', 'y']
+            weekly_sales['y'] = np.log1p(weekly_sales['y'])  # Log-transform to stabilize variance
 
             # Prophet Model Fitting
             model = Prophet(yearly_seasonality=True, daily_seasonality=False)
-            model.add_seasonality(name='monthly', period=30.5, fourier_order=5)
-            model.fit(monthly_sales)
+            model.add_seasonality(name='weekly', period=7, fourier_order=3)
+            model = Prophet(yearly_seasonality=True, daily_seasonality=False)            
+            model.fit(weekly_sales)
+
 
             # Forecast period
-            forecast_extension = st.slider("Select the number of months to forecast:", min_value=1, max_value=24, value=3)
-            future = model.make_future_dataframe(periods=forecast_extension, freq='M')
+            forecast_extension = st.slider("Select the number of weeks to forecast:", min_value=1, max_value=52, value=12)
+            future = model.make_future_dataframe(periods=forecast_extension, freq='W')
             forecast = model.predict(future)
 
             # Reverse log transformation for interpretability
             forecast['yhat'] = np.expm1(forecast['yhat'])
             forecast['yhat_lower'] = np.expm1(forecast['yhat_lower'])
             forecast['yhat_upper'] = np.expm1(forecast['yhat_upper'])
-            monthly_sales['y'] = np.expm1(monthly_sales['y'])  # Reverse on actual data
+            weekly_sales['y'] = np.expm1(weekly_sales['y'])  # Reverse on actual data
 
             # Plotting Prophet Forecast with Plotly
             fig_prophet = go.Figure()
-            fig_prophet.add_trace(go.Scatter(x=monthly_sales['ds'], y=monthly_sales['y'], mode='lines', name='Original Sales'))
-            fig_prophet.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='Forecasted Sales',line=dict(dash='dash', color='red')))
+            fig_prophet.add_trace(go.Scatter(x=weekly_sales['ds'], y=weekly_sales['y'], mode='lines', name='Original Sales'))
+            fig_prophet.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='Forecasted Sales', line=dict(dash='dash', color='red')))
             fig_prophet.add_trace(go.Scatter(
                 x=forecast['ds'], y=forecast['yhat_upper'], mode='lines', line=dict(width=0),
                 showlegend=False
@@ -513,7 +518,7 @@ elif page == "Forecast":
                 x=forecast['ds'], y=forecast['yhat_lower'], mode='lines', line=dict(width=0),
                 fill='tonexty', name='Confidence Interval', fillcolor='rgba(255,165,0,0.2)'
             ))
-            fig_prophet.update_layout(title=f"Forecast for Total Sales (CA) for the next {forecast_extension} months", xaxis_title="Date", yaxis_title="Total Sales (CA)")
+            fig_prophet.update_layout(title=f"Forecast for Total Sales (CA) for the next {forecast_extension} weeks", xaxis_title="Date", yaxis_title="Total Sales (CA)")
             st.plotly_chart(fig_prophet)
 
             # Create Downloadable Forecast CSV
@@ -528,7 +533,6 @@ elif page == "Forecast":
 
         else:
             st.warning("Required column 'Ventes totales' not found for revenue forecast.")
-
         # Product-Level Purchase Forecast with SARIMA
         st.subheader("Forecasting Monthly Purchases per Product")
         best_configs = {
