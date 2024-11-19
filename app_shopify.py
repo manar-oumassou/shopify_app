@@ -72,24 +72,15 @@ data = st.session_state.get('data')
 data2 = st.session_state.get('data2')
 data3 = st.session_state.get('data3')
 if page == "Correlation Analysis":
-    # Upload CSV files for sales, total conversions, and marketing budget data
+    # File Uploads
     sales_file = st.file_uploader("Upload Sales Data (CSV)", type="csv")
-    conversions_file = st.file_uploader("Upload Total Conversions Data (CSV)", type="csv")
     budget_file = st.file_uploader("Upload Marketing Budget Data (Excel)", type="xlsx")
-    checkout_file = st.file_uploader("Upload Checkout Data (CSV)", type="csv")
-    
-
-    if sales_file and conversions_file and budget_file and checkout_file:
-        # Load main sales data
-        sales_data  = load_data(sales_file)
-        
+    # Load main sales data
+    if sales_file is not None and budget_file is not None:
+        sales_data = load_data(sales_file)
+        budget_data = pd.read_excel(budget_file, sheet_name='Feuil1', skiprows=1)
         if 'Ventes totales' in sales_data.columns:
             # Data Cleaning
-            conversion_data = pd.read_csv(conversions_file)
-            checkout_data = pd.read_csv(checkout_file)
-            budget_data = pd.read_excel(budget_file, sheet_name='Feuil1', skiprows=1)
-            
-            # Clean Sales Data
             columns_to_drop = [
                 'Emplacements de PDV', 'Pays de facturation', 'Région de facturation',
                 'Ville de facturation', 'Pays d\'expédition', 'Région d\'expédition',
@@ -99,82 +90,131 @@ if page == "Correlation Analysis":
             data_cleaned['Date'] = pd.to_datetime(data_cleaned['Date'], errors='coerce').dt.tz_localize(None)
             data_cleaned.set_index('Date', inplace=True)
 
-            # Weekly Resampling for main sales data
-            weekly_sales = data_cleaned['Ventes totales'].resample('W').sum().reset_index()
-            weekly_sales.columns = ['ds', 'y']
-            weekly_sales['y'] = np.log1p(weekly_sales['y'])
+            # Monthly Resampling for main sales data
+            monthly_sales = data_cleaned['Ventes totales'].resample('MS').sum().reset_index()
+            monthly_sales.columns = ['ds', 'y']
 
-            # Unified date index
-            unified_index = pd.date_range(start=weekly_sales['ds'].min(), end=weekly_sales['ds'].max(), freq='W')
+            # Apply log transformation to sales data
+            monthly_sales['y'] = np.log1p(monthly_sales['y'])  # Log-transform sales to reduce variability
 
-            # Process Conversion Data
-            conversion_data['week'] = pd.to_datetime(conversion_data['week'] + '-1', format='%Y-W%W-%w')
-            conversion_data.set_index('week', inplace=True)
-            conversion_data_resampled = conversion_data['total_conversion'].resample('W-SUN').sum()
+            # Unified date index for monthly data
+            unified_index = pd.date_range(start=monthly_sales['ds'].min(), end=monthly_sales['ds'].max(), freq='MS')
 
             # Process Budget Data
             budget_data.columns = ['Unnamed', 'Dates', 'Montant_MKT']
             budget_data = budget_data.dropna(subset=['Dates', 'Montant_MKT'])
             budget_data['Dates'] = pd.to_datetime(budget_data['Dates'], errors='coerce')
             budget_data.set_index('Dates', inplace=True)
-            weekly_budget = budget_data['Montant_MKT'].resample('W').sum().reindex(unified_index, fill_value=0)
 
-            # Process Checkout Data
-            checkout_data['Created at'] = pd.to_datetime(checkout_data['Created at'], errors='coerce')
-            weekly_checkout_count = checkout_data.resample('W', on='Created at').size()
-            weekly_checkout_count.index = weekly_checkout_count.index.to_period('W').to_timestamp('W')
-            weekly_checkout_count = weekly_checkout_count.asfreq('W').reindex(unified_index, fill_value=0)
+            # Calculate monthly budget
+            monthly_budget = budget_data['Montant_MKT'].resample('MS').sum()
+
+            # Reindex to match the unified monthly index
+            monthly_budget = monthly_budget.reindex(unified_index, fill_value=0)
 
             # Combine all data into a single DataFrame
             combined_data = pd.DataFrame(index=unified_index)
-            combined_data['y'] = weekly_sales.set_index('ds').reindex(unified_index)['y'].fillna(0)
-            combined_data['total_conversion'] = conversion_data_resampled.reindex(unified_index, fill_value=0).values
-            combined_data['Montant_MKT'] = weekly_budget.values
-            combined_data['checkout_count'] = weekly_checkout_count.values
+            combined_data['y'] = monthly_sales.set_index('ds').reindex(unified_index)['y'].fillna(0)
+            combined_data['Montant_MKT'] = monthly_budget.values
+
+            # Display Combined Data
+            st.subheader("Previous Data")
+            st.dataframe(combined_data)
 
             # Prophet Model Fitting
             model = Prophet(yearly_seasonality=True, daily_seasonality=False)
-            model.add_seasonality(name='weekly', period=7, fourier_order=5)
-            model.add_regressor('total_conversion')
             model.add_regressor('Montant_MKT')
-            model.add_regressor('checkout_count')
             model.fit(combined_data.reset_index().rename(columns={'index': 'ds'}))
 
-            # Add a slider for forecast period selection
-            forecast_extension_value = st.slider("Select number of weeks to forecast", min_value=1, max_value=52, value=7)
+            # Forecasting Period
+            forecast_extension_value = st.slider("Select number of months to forecast", min_value=1, max_value=7, value=1)
 
             # Prepare future DataFrame
-            future = model.make_future_dataframe(periods=forecast_extension_value, freq='W')
+            future_dates = pd.date_range(start=combined_data.index.max() + pd.offsets.MonthBegin(1),
+                                        periods=forecast_extension_value, freq='MS')
 
-            # Add future values for regressors
-            future['total_conversion'] = conversion_data_resampled.reindex(future['ds'], fill_value=0).fillna(method='ffill').fillna(0).values
-            future['Montant_MKT'] = weekly_budget.reindex(future['ds'], fill_value=0).fillna(method='ffill').fillna(0).values
-            future['checkout_count'] = weekly_checkout_count.reindex(future['ds'], fill_value=0).fillna(method='ffill').fillna(0).values
+            # Interactive Future Data Entry
+            st.subheader("Insert Future Data")
+            future_input = pd.DataFrame({
+                'ds': future_dates,
+                'Montant_MKT': [0.0000] * forecast_extension_value,
+            })
 
-            # Make predictions
-            forecast = model.predict(future)
+            # Editable Table for User Input
+            edited_future_input = st.data_editor(future_input, num_rows="dynamic")
 
-            # Reverse log transformation for interpretability
-            forecast['yhat'] = np.expm1(forecast['yhat'])
-            forecast['yhat_lower'] = np.expm1(forecast['yhat_lower'])
-            forecast['yhat_upper'] = np.expm1(forecast['yhat_upper'])
-            combined_data['y'] = np.expm1(combined_data['y'])
+            # Button to Validate and Proceed
+            if st.button("Validate and Forecast"):
+                # Extend the future DataFrame for Prophet
+                # Calculate correlation
 
-            # Plotting Prophet Forecast with Plotly
-            fig_prophet = go.Figure()
-            fig_prophet.add_trace(go.Scatter(x=combined_data.index, y=combined_data['y'], mode='lines', name='Original Sales'))
-            fig_prophet.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='Forecasted Sales', line=dict(dash='dash', color='red')))
-            fig_prophet.add_trace(go.Scatter(
-                x=forecast['ds'], y=forecast['yhat_upper'], mode='lines', line=dict(width=0),
-                showlegend=False
-            ))
-            fig_prophet.add_trace(go.Scatter(
-                x=forecast['ds'], y=forecast['yhat_lower'], mode='lines', line=dict(width=0),
-                fill='tonexty', name='Confidence Interval', fillcolor='rgba(255,165,0,0.2)'
-            ))
-            fig_prophet.update_layout(title=f"Forecast for Total Sales (CA) for the next {forecast_extension_value} weeks",
-                                    xaxis_title="Date", yaxis_title="Total Sales (CA)")
-            st.plotly_chart(fig_prophet)
+                future = model.make_future_dataframe(periods=forecast_extension_value, freq='MS')
+                future = future.merge(edited_future_input, on='ds', how='left')
+
+                # Handle any missing regressors
+                future['Montant_MKT'].fillna(0, inplace=True)
+
+                # Make predictions
+                forecast = model.predict(future)
+
+                # Reverse log transformation for interpretability
+                forecast['yhat'] = np.expm1(forecast['yhat'])
+                forecast['yhat_lower'] = np.expm1(forecast['yhat_lower'])
+                forecast['yhat_upper'] = np.expm1(forecast['yhat_upper'])
+                combined_data['y'] = np.expm1(combined_data['y'])
+                combined_data1 = combined_data[combined_data.index < "2024-06-01"]
+                correlation = combined_data1[['y', 'Montant_MKT']].corr().iloc[0, 1]
+
+                # Display correlation in Streamlit
+                st.subheader("Correlation Analysis")
+                st.write(f"Correlation between Marketing Budget (Montant_MKT) and Total Sales (Ventes totales): **{correlation:.2f}**")
+                fig = px.scatter(
+                    combined_data1,
+                    x='Montant_MKT',
+                    y='y',
+                    title="Correlation between Total Sales and Marketing Budget",
+                    labels={
+                        'Montant_MKT': 'Marketing Budget (Montant_MKT)',
+                        'y': 'Total Sales (Ventes totales)'
+                    },
+                    template='plotly_white'
+                )
+                fig.update_traces(marker=dict(color='blue', size=6))
+                st.plotly_chart(fig)
+                # Plotting Prophet Forecast with Plotly
+                st.subheader("Forecast Results")
+                fig_prophet = go.Figure()
+                fig_prophet.add_trace(go.Scatter(x=combined_data.index, y=combined_data['y'], mode='lines', name='Original Sales'))
+                fig_prophet.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='Forecasted Sales', line=dict(dash='dash', color='red')))
+                fig_prophet.add_trace(go.Scatter(
+                    x=forecast['ds'], y=forecast['yhat_upper'], mode='lines', line=dict(width=0),
+                    showlegend=False
+                ))
+                fig_prophet.add_trace(go.Scatter(
+                    x=forecast['ds'], y=forecast['yhat_lower'], mode='lines', line=dict(width=0),
+                    fill='tonexty', name='Confidence Interval', fillcolor='rgba(255,165,0,0.2)'
+                ))
+                fig_prophet.update_layout(title=f"Forecast for Total Sales (CA) for the next {forecast_extension_value} months",
+                                        xaxis_title="Date", yaxis_title="Total Sales (CA)")
+                st.plotly_chart(fig_prophet)
+
+                # Plot Montant_MKT influence
+                fig_marketing_budget = go.Figure()
+                fig_marketing_budget.add_trace(go.Scatter(
+                    x=forecast['ds'], 
+                    y=forecast['Montant_MKT'], 
+                    mode='lines', 
+                    name='Marketing Budget Influence',
+                    line=dict(color='green')
+                ))
+                fig_marketing_budget.update_layout(
+                    title="Influence of Marketing Budget (Montant_MKT) on Forecast",
+                    xaxis=dict(title="Date"),
+                    yaxis=dict(title="Influence Value"),
+                    legend=dict(x=0, y=1.2, orientation='h')
+                )
+                st.plotly_chart(fig_marketing_budget)
+
         else:
             st.error("Required column 'Ventes totales' not found in sales data.")
 
